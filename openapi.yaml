@@ -1,0 +1,274 @@
+openapi: 3.0.3
+info:
+  title: attendance-device
+  version: 1.0.0
+  description: |
+    Educational demo of a push server for attendance terminals (example: FingerTec Face ID 5)
+    using the iclock push protocol, without AWDMS. Not for production: no authentication,
+    in-memory storage only.
+
+    `/iclock/*` endpoints are called by the DEVICE. `/status` and `/command` are called by
+    your SYSTEM. Every request and response is written to the log.
+servers:
+  - url: http://localhost:8081
+    description: Local demo
+tags:
+  - name: system
+    description: Called by your system
+  - name: iclock
+    description: Called by the device (use these to simulate a device)
+
+paths:
+  /status:
+    get:
+      tags: [system]
+      summary: Device status
+      description: Without `sn`, lists all devices. With `sn`, returns one device and its 20 latest attendance records.
+      operationId: getStatus
+      parameters:
+        - name: sn
+          in: query
+          required: false
+          schema: { type: string, example: DEMO-FACEID5-001 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/DeviceList"
+                  - $ref: "#/components/schemas/DeviceDetail"
+        "404":
+          description: Device has never connected
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /command:
+    get:
+      tags: [system]
+      summary: Command history
+      operationId: listCommands
+      parameters:
+        - name: sn
+          in: query
+          required: false
+          schema: { type: string, example: DEMO-FACEID5-001 }
+      responses:
+        "200":
+          description: Commands, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  commands:
+                    type: array
+                    items: { $ref: "#/components/schemas/Command" }
+    post:
+      tags: [system]
+      summary: Queue a command for a device
+      description: The command waits in a queue until the device calls `/iclock/getrequest`.
+      operationId: addCommand
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CommandRequest" }
+            examples:
+              reboot:
+                value: { sn: DEMO-FACEID5-001, action: reboot }
+              info:
+                value: { sn: DEMO-FACEID5-001, action: info }
+              add_user:
+                value: { sn: DEMO-FACEID5-001, action: add_user, pin: "1001", name: Ali Demo }
+              delete_user:
+                value: { sn: DEMO-FACEID5-001, action: delete_user, pin: "1001" }
+              query_attlog:
+                value: { sn: DEMO-FACEID5-001, action: query_attlog, from: "2026-11-01 00:00:00", to: "2026-11-02 23:59:59" }
+      responses:
+        "202":
+          description: Command queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  command: { $ref: "#/components/schemas/Command" }
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /iclock/cdata:
+    get:
+      tags: [iclock]
+      summary: Device handshake
+      description: Device asks for its push settings after power on.
+      operationId: iclockHandshake
+      parameters:
+        - $ref: "#/components/parameters/SN"
+        - name: options
+          in: query
+          schema: { type: string, example: all }
+        - name: pushver
+          in: query
+          schema: { type: string, example: "2.4.1" }
+      responses:
+        "200":
+          description: Settings, one per line
+          content:
+            text/plain:
+              schema: { type: string }
+              example: |
+                GET OPTION FROM: DEMO-FACEID5-001
+                ATTLOGStamp=None
+                Delay=10
+                Realtime=1
+    post:
+      tags: [iclock]
+      summary: Device pushes data
+      description: |
+        `table=ATTLOG` body is one record per line, tab separated:
+        `PIN<TAB>YYYY-MM-DD HH:MM:SS<TAB>Status<TAB>Verify<TAB>WorkCode`.
+        `table=OPERLOG` is logged only.
+      operationId: iclockPushData
+      parameters:
+        - $ref: "#/components/parameters/SN"
+        - name: table
+          in: query
+          required: true
+          schema: { type: string, enum: [ATTLOG, OPERLOG] }
+        - name: Stamp
+          in: query
+          schema: { type: string, example: "9999" }
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema: { type: string }
+            example: "1001\t2026-11-02 08:01:00\t0\t15\t0\t0\n"
+      responses:
+        "200":
+          description: Acknowledged
+          content:
+            text/plain:
+              schema: { type: string }
+              example: "OK: 1"
+
+  /iclock/getrequest:
+    get:
+      tags: [iclock]
+      summary: Device polls for the next command
+      operationId: iclockGetRequest
+      parameters:
+        - $ref: "#/components/parameters/SN"
+      responses:
+        "200":
+          description: Next command as `C:<id>:<command>`, or `OK` when the queue is empty
+          content:
+            text/plain:
+              schema: { type: string }
+              example: "C:1:REBOOT"
+
+  /iclock/devicecmd:
+    post:
+      tags: [iclock]
+      summary: Device reports a command result
+      description: "`Return=0` means success. For INFO, extra lines after the first hold device details."
+      operationId: iclockDeviceCmd
+      parameters:
+        - $ref: "#/components/parameters/SN"
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema: { type: string }
+            example: "ID=1&Return=0&CMD=REBOOT"
+      responses:
+        "200":
+          description: Acknowledged
+          content:
+            text/plain:
+              schema: { type: string }
+              example: OK
+
+components:
+  parameters:
+    SN:
+      name: SN
+      in: query
+      required: true
+      description: Device serial number
+      schema: { type: string, example: DEMO-FACEID5-001 }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+    CommandRequest:
+      type: object
+      required: [sn, action]
+      properties:
+        sn: { type: string }
+        action:
+          type: string
+          enum: [reboot, info, check, query_users, query_attlog, add_user, delete_user]
+        pin:
+          type: string
+          description: Numeric user ID. Required for add_user and delete_user. `*` (all) is blocked.
+        name:
+          type: string
+          description: Required for add_user
+        from:
+          type: string
+          description: "query_attlog only, format YYYY-MM-DD HH:MM:SS"
+        to:
+          type: string
+          description: "query_attlog only, format YYYY-MM-DD HH:MM:SS"
+    Command:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        sn: { type: string }
+        text: { type: string, example: "C:1:REBOOT" }
+        status: { type: string, enum: [queued, sent, done, failed] }
+        return: { type: string }
+        created_at: { type: string, format: date-time }
+        sent_at: { type: string, format: date-time }
+        done_at: { type: string, format: date-time }
+    Device:
+      type: object
+      properties:
+        sn: { type: string }
+        ip: { type: string }
+        first_seen: { type: string, format: date-time }
+        last_seen: { type: string, format: date-time }
+        online: { type: boolean, description: Seen in the last 90 seconds }
+        pending_commands: { type: integer }
+        attendance_count: { type: integer }
+        info: { type: string }
+    Attendance:
+      type: object
+      properties:
+        sn: { type: string }
+        pin: { type: string }
+        time: { type: string, example: "2026-11-02 08:01:00" }
+        status: { type: string, description: "Punch state, e.g. 0 = check in, 1 = check out" }
+        verify: { type: string, description: "Verify mode, e.g. 15 = face" }
+    DeviceList:
+      type: object
+      properties:
+        devices:
+          type: array
+          items: { $ref: "#/components/schemas/Device" }
+    DeviceDetail:
+      type: object
+      properties:
+        device: { $ref: "#/components/schemas/Device" }
+        recent_attendance:
+          type: array
+          items: { $ref: "#/components/schemas/Attendance" }
